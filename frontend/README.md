@@ -1,106 +1,55 @@
-# React + TypeScript + Vite + Tailwind CSS
+# Flight Proximity frontend
 
-This template provides React 19, TypeScript 7, Vite 8, Tailwind CSS 4, HMR, and ESLint.
+The map application for the [4D flight proximity demo](../README.md): React 19, TypeScript, Vite, Tailwind CSS 4 and
+MapLibre GL JS.
 
-## Development
+## Running it
 
-Use Node.js 22.13+ or 24+ (the supported ranges are `^22.13.0 || >=24.0.0`) and npm 11.17+. From this directory:
+The frontend talks to the flights API on its own origin, under `/api`. In development Vite proxies that path, by
+default to the local API on port 3001.
 
-```sh
-npm ci
-npm run dev
+```bash
+# Terminal 1, from the project root: serve the API from memory, no AWS needed
+npm run local-api
+
+# Terminal 2, from the project root (or `npm run dev` in this folder)
+npm run frontend
 ```
 
-Run `npm run build` for type checking and a production build, and `npm run lint` for ESLint.
+To develop against a deployed stack instead, point the proxy at its CloudFront URL:
 
-The local `.npmrc` applies a 48-hour release cooldown to all new package resolutions, including transitive dependencies, with no exemptions. `npm ci` installs the reviewed lockfile without rechecking publication dates. See the root README for the dependency policy.
-
-## TypeScript compiler and lint compatibility
-
-`tsc` runs the latest stable TypeScript 7 compiler, installed with the `@typescript/native` npm alias. The `typescript` dependency aliases `@typescript/typescript6` because typescript-eslint still needs the TypeScript 6 JavaScript API. This follows the [TypeScript team's side-by-side installation guidance](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6-0) and keeps linting compatible without bypassing peer dependency checks. `tsc6` is available for tools that explicitly need the older compiler.
-
-## Tailwind CSS
-
-Tailwind is configured through `@tailwindcss/vite` in `vite.config.ts`. Its theme and utilities are imported in `src/index.css`; use utility classes directly in JSX, for example:
-
-```tsx
-<div className="rounded-xl bg-violet-100 p-6 text-violet-950">
-  Ready for Tailwind
-</div>
+```bash
+API_PROXY_TARGET=https://dxxxxxxxxxxxx.cloudfront.net npm run dev
 ```
 
-The starter's existing CSS remains in place. [Preflight](https://tailwindcss.com/docs/preflight#disabling-preflight) is omitted to preserve its appearance. To enable Tailwind's base reset when replacing the starter design, replace the three Tailwind layer/import lines in `src/index.css` with `@import 'tailwindcss';`. Custom styles outside a CSS layer take precedence over layered utilities; put new base or component rules in `@layer base` or `@layer components` when utility classes should override them.
+`npm run build` type-checks and produces a production build in `dist/`; `npm run lint` runs ESLint. The CDK frontend
+stack runs the build for you when you deploy.
 
-See the [Tailwind Vite installation guide](https://tailwindcss.com/docs/installation/using-vite) for details.
+## How it fits together
 
-## React plugins
+| File | What it does |
+|---|---|
+| `src/App.tsx` | Application state: selected flight, limits, analysis result. Mirrors them to the URL so a view can be shared. |
+| `src/lib/useFlights.ts` | Loads the manifest, then all flights: from IndexedDB when the cached version matches, otherwise 24 hourly buckets in parallel with progress. |
+| `src/lib/cache.ts` | The IndexedDB cache, keyed by the dataset version in the manifest. |
+| `src/lib/api.ts` | The four API calls. |
+| `src/components/MapView.tsx` | The MapLibre map: every track, the selected flight, flights that came close, and a marker at each closest approach. |
+| `src/components/LoadingScreen.tsx` | Shown until the flights are loaded and the map has drawn. |
+| `src/components/SearchBox.tsx` | Callsign search with type-ahead. |
+| `src/components/FlightCard.tsx`, `AltitudeProfile.tsx` | The selected flight, its altitude profile, and a table of its position reports with their 4D vectors. |
+| `src/components/ProximityControls.tsx` | The two sliders that define "close", and the Analyse button. |
+| `src/components/Results.tsx` | The flights that came close, and how the search found them. |
 
-Currently, two official plugins are available:
+## Basemap
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The basemap is the [OpenFreeMap](https://openfreemap.org) dark style: free vector tiles built from OpenStreetMap,
+with no API key or account. If it cannot be reached the map falls back to a plain background and everything else
+keeps working. To use a different basemap, change `BASEMAP_STYLE_URL` in `src/components/MapView.tsx` and the matching
+host in the Content Security Policy in `lib/frontend/frontend-stack.ts`.
 
-## React Compiler
+## Colours
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+The three data colours (all flights, the selected flight, flights that came close) are a set checked for
+colour-blind safety against the dark map: every pair stays distinguishable under protanopia and deuteranopia. They
+are defined once in `src/index.css` and mirrored in `MapView.tsx`, because MapLibre paint properties cannot read CSS
+variables.

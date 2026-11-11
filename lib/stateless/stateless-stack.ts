@@ -15,7 +15,6 @@
 import { CfnOutput, Duration, Size, Stack, StackProps } from 'aws-cdk-lib';
 import { Cors, EndpointType, IResource, LambdaIntegration, RestApi } from 'aws-cdk-lib/aws-apigateway';
 import { Table } from 'aws-cdk-lib/aws-dynamodb';
-import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
 import { EnvironmentConfig, Stage } from '../../config';
@@ -74,11 +73,8 @@ export class StatelessStack extends Stack {
     // Everything lives under /api so that CloudFront can route it with a single behaviour
     const apiRoot = this.api.root.addResource('api');
 
-    const healthcheck = lambda('Healthcheck', 'src/api/healthcheck.ts', 256);
-    healthcheck.addToRolePolicy(
-      new PolicyStatement({ actions: ['dynamodb:DescribeTable'], resources: [table.tableArn] }),
-    );
-    get(apiRoot.addResource('health'), healthcheck);
+    // grantReadData includes dynamodb:DescribeTable, which is how the health check sees the vector index status
+    get(apiRoot.addResource('health'), lambda('Healthcheck', 'src/api/healthcheck.ts', 256));
 
     get(apiRoot.addResource('manifest'), lambda('GetManifest', 'src/api/get-manifest.ts', 256));
 

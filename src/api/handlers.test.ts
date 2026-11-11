@@ -55,6 +55,10 @@ describe('GET /api/flights/{flightId}', () => {
     const body = JSON.parse(response.body);
     expect(body.callsign).toBe('SUBJECT');
     expect(body.positions).toHaveLength(11);
+    // Each report carries the vector it is indexed under: [x, y, z, t]
+    expect(body.positions[0].vec).toHaveLength(4);
+    expect(body.positions[0].vec[0]).toBeCloseTo(-66, 1);
+    expect(body.positions[0].vec[3]).toBeCloseTo(12 * 3600 * 0.25, 1);
   });
 
   test('accepts an id that is still percent-encoded', async () => {

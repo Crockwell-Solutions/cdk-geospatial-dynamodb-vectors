@@ -33,7 +33,6 @@
     "constructs": "^10.8.1"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
     "@eslint/json": "^2.1.1",
     "@eslint/markdown": "^8.0.3",
     "@types/aws-lambda": "^8.10.164",
@@ -47,8 +46,6 @@
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.7",
-    "eslint-plugin-security": "^4.2.1",
-    "globals": "^17.14.0",
     "jest": "^30.5.2",
     "prettier": "^3.9.10",
     "ts-jest": "^29.4.15",

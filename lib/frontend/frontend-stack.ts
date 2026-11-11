@@ -40,8 +40,11 @@ export interface FrontendStackProps extends StackProps {
   api: RestApi;
 }
 
-/** Hosts the map is allowed to load basemap tiles from */
-const BASEMAP_TILE_HOSTS = ['https://basemaps.cartocdn.com', 'https://*.basemaps.cartocdn.com'];
+/**
+ * Where the basemap comes from: OpenFreeMap serves its style, vector tiles, fonts and icons
+ * from this one host, with no API key. It is the only third-party origin the application uses.
+ */
+const BASEMAP_HOST = 'https://tiles.openfreemap.org';
 
 export class FrontendStack extends Stack {
   public readonly distribution: Distribution;
@@ -72,9 +75,9 @@ export class FrontendStack extends Stack {
       // MapLibre positions its markers and controls with inline styles
       `style-src ${self} ${quoted('unsafe-inline')}`,
       `font-src ${self} data:`,
-      [`img-src ${self} data: blob:`, ...BASEMAP_TILE_HOSTS].join(' '),
-      // The API is same-origin; only basemap tiles are fetched from elsewhere
-      [`connect-src ${self}`, ...BASEMAP_TILE_HOSTS].join(' '),
+      `img-src ${self} data: blob: ${BASEMAP_HOST}`,
+      // The API is same-origin; only the basemap is fetched from elsewhere
+      `connect-src ${self} ${BASEMAP_HOST}`,
       // MapLibre runs its tile workers from blob URLs
       `worker-src ${self} blob:`,
       `child-src ${self} blob:`,
