@@ -1,17 +1,17 @@
 /*
  * CDK Stack - Frontend Resources
  *
- * This CDK stack sets up the frontend resources for the Geospatial DynamoDB Vectors Demo Platform
- * This contains the S3 bucket for hosting the React application and the CloudFront distribution for serving it.
+ * One CloudFront distribution serves both the React application (from S3) and
+ * the API (from API Gateway, under /api). Same origin for everything means no
+ * CORS and no runtime configuration for the frontend to load.
  *
  * Copyright Crockwell Solutions Limited
  */
 
-import { Construct } from 'constructs';
-import { Duration, Stack, StackProps, RemovalPolicy } from 'aws-cdk-lib';
-import * as cdk from 'aws-cdk-lib';
-import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
-import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
+import { execSync } from 'child_process';
+import * as path from 'path';
+import { CfnOutput, DockerImage, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
+import { RestApi } from 'aws-cdk-lib/aws-apigateway';
 import {
   AllowedMethods,
   CacheCookieBehavior,
@@ -23,29 +23,35 @@ import {
   HeadersFrameOption,
   HeadersReferrerPolicy,
   HttpVersion,
+  OriginRequestPolicy,
   ResponseHeadersPolicy,
   ViewerProtocolPolicy,
 } from 'aws-cdk-lib/aws-cloudfront';
-import { S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins';
-import { execSync } from 'child_process';
-import * as path from 'path';
-import { EnvironmentConfig, Stage } from '@config';
+import { RestApiOrigin, S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins';
+import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
+import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
+import { Construct } from 'constructs';
+import { EnvironmentConfig, Stage } from '../../config';
+import { projectRoot } from '../utils/project-root';
 
 export interface FrontendStackProps extends StackProps {
   stage: Stage;
   envConfig: EnvironmentConfig;
-  userPoolId: string;
-  userPoolClientId: string;
+  api: RestApi;
 }
 
+/** Hosts the map is allowed to load basemap tiles from */
+const BASEMAP_TILE_HOSTS = ['https://basemaps.cartocdn.com', 'https://*.basemaps.cartocdn.com'];
+
 export class FrontendStack extends Stack {
-  public distribution: Distribution;
+  public readonly distribution: Distribution;
 
   constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
 
-    // Create an S3 bucket to host the React application
-    const websiteBucket = new Bucket(this, `${props.envConfig.project}WebsiteBucket`, {
+    const { project } = props.envConfig;
+
+    const websiteBucket = new Bucket(this, 'WebsiteBucket', {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       encryption: BucketEncryption.S3_MANAGED,
       enforceSSL: true,
@@ -53,71 +59,43 @@ export class FrontendStack extends Stack {
       autoDeleteObjects: true,
     });
 
-    const apiUrl = `https://${props.envConfig.apiDomainName}`;
-    const apiOrigin = new URL(apiUrl).origin;
-    const cognitoEndpoint = `https://cognito-idp.${props.envConfig.env.region}.amazonaws.com`;
-    const cspKeyword = (keyword: string): string => `'${keyword}'`;
-    const cspSelf = cspKeyword('self');
-    const cspNone = cspKeyword('none');
-    const cspUnsafeInline = cspKeyword('unsafe-inline');
+    const quoted = (keyword: string): string => `'${keyword}'`;
+    const self = quoted('self');
+    const none = quoted('none');
     const contentSecurityPolicy = [
-      `default-src ${cspSelf}`,
-      `base-uri ${cspSelf}`,
-      `object-src ${cspNone}`,
-      `frame-ancestors ${cspNone}`,
-      `form-action ${cspSelf}`,
-      `script-src ${cspSelf}`,
-      `style-src ${cspSelf} ${cspUnsafeInline} https://fonts.googleapis.com`,
-      `font-src ${cspSelf} data: https://fonts.gstatic.com`,
-      [
-        `img-src ${cspSelf} data: blob:`,
-        'https://server.arcgisonline.com',
-        'https://basemaps.cartocdn.com',
-        'https://tile.openstreetmap.org',
-        'https://maps.crockwell.com',
-      ].join(' '),
-      [
-        `connect-src ${cspSelf}`,
-        'data:',
-        'blob:',
-        apiOrigin,
-        cognitoEndpoint,
-        'https://server.arcgisonline.com',
-        'https://basemaps.cartocdn.com',
-        'https://tile.openstreetmap.org',
-        'https://maps.crockwell.com',
-        'https://nominatim.openstreetmap.org',
-      ].join(' '),
-      `worker-src ${cspSelf} blob:`,
+      `default-src ${self}`,
+      `base-uri ${self}`,
+      `object-src ${none}`,
+      `frame-ancestors ${none}`,
+      `form-action ${self}`,
+      `script-src ${self}`,
+      // MapLibre positions its markers and controls with inline styles
+      `style-src ${self} ${quoted('unsafe-inline')}`,
+      `font-src ${self} data:`,
+      [`img-src ${self} data: blob:`, ...BASEMAP_TILE_HOSTS].join(' '),
+      // The API is same-origin; only basemap tiles are fetched from elsewhere
+      [`connect-src ${self}`, ...BASEMAP_TILE_HOSTS].join(' '),
+      // MapLibre runs its tile workers from blob URLs
+      `worker-src ${self} blob:`,
+      `child-src ${self} blob:`,
       'upgrade-insecure-requests',
     ].join('; ');
 
-    const frontendSecurityHeaders = new ResponseHeadersPolicy(this, `${props.envConfig.project}FrontendHeaders`, {
+    const securityHeaders = new ResponseHeadersPolicy(this, 'SecurityHeaders', {
+      comment: `${project} frontend security headers`,
       securityHeadersBehavior: {
         strictTransportSecurity: {
           accessControlMaxAge: Duration.days(365),
           includeSubdomains: true,
-          preload: true,
           override: true,
         },
         contentTypeOptions: { override: true },
-        frameOptions: {
-          frameOption: HeadersFrameOption.DENY,
-          override: true,
-        },
+        frameOptions: { frameOption: HeadersFrameOption.DENY, override: true },
         referrerPolicy: {
           referrerPolicy: HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
           override: true,
         },
-        xssProtection: {
-          protection: true,
-          modeBlock: true,
-          override: true,
-        },
-        contentSecurityPolicy: {
-          contentSecurityPolicy,
-          override: true,
-        },
+        contentSecurityPolicy: { contentSecurityPolicy, override: true },
       },
       customHeadersBehavior: {
         customHeaders: [
@@ -130,7 +108,8 @@ export class FrontendStack extends Stack {
       },
     });
 
-    const staticAssetCachePolicy = new CachePolicy(this, `${props.envConfig.project}StaticAssetCachePolicy`, {
+    // Vite fingerprints everything under /assets, so it can be cached for a year
+    const staticAssetCachePolicy = new CachePolicy(this, 'StaticAssetCachePolicy', {
       comment: 'Cache immutable Vite assets without varying on viewer-controlled input',
       defaultTtl: Duration.days(365),
       maxTtl: Duration.days(365),
@@ -144,8 +123,8 @@ export class FrontendStack extends Stack {
 
     const websiteOrigin = S3BucketOrigin.withOriginAccessControl(websiteBucket);
 
-    // Create CloudFront distribution
-    this.distribution = new Distribution(this, `${props.envConfig.project}WebsiteDistribution`, {
+    this.distribution = new Distribution(this, 'WebsiteDistribution', {
+      comment: `${project} map application and API`,
       defaultRootObject: 'index.html',
       httpVersion: HttpVersion.HTTP2_AND_3,
       defaultBehavior: {
@@ -154,7 +133,7 @@ export class FrontendStack extends Stack {
         allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
         cachedMethods: CachedMethods.CACHE_GET_HEAD,
         cachePolicy: CachePolicy.CACHING_DISABLED,
-        responseHeadersPolicy: frontendSecurityHeaders,
+        responseHeadersPolicy: securityHeaders,
       },
       additionalBehaviors: {
         'assets/*': {
@@ -163,56 +142,36 @@ export class FrontendStack extends Stack {
           allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
           cachedMethods: CachedMethods.CACHE_GET_HEAD,
           cachePolicy: staticAssetCachePolicy,
-          responseHeadersPolicy: frontendSecurityHeaders,
+          responseHeadersPolicy: securityHeaders,
         },
-        'config.js': {
-          origin: websiteOrigin,
+        // API Gateway. Each Lambda decides how long its response may be cached via Cache-Control:
+        // flight lists are cached at the edge for a few minutes, analysis results are never cached.
+        'api/*': {
+          origin: new RestApiOrigin(props.api),
           viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
+          allowedMethods: AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
           cachedMethods: CachedMethods.CACHE_GET_HEAD,
-          cachePolicy: CachePolicy.CACHING_DISABLED,
-          responseHeadersPolicy: frontendSecurityHeaders,
+          cachePolicy: CachePolicy.USE_ORIGIN_CACHE_CONTROL_HEADERS_QUERY_STRINGS,
+          originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          compress: true,
         },
       },
-      errorResponses: [
-        {
-          httpStatus: 404,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: Duration.seconds(0),
-        },
-      ],
     });
 
-    // Build and deploy the React application (excluding config.js — deployed separately)
-    const frontendPath = path.join(__dirname, '../../frontend');
-
-    const websiteDeployment = new BucketDeployment(this, `${props.envConfig.project}WebsiteDeployment`, {
+    // Build the React application and upload it
+    const frontendPath = path.join(projectRoot, 'frontend');
+    new BucketDeployment(this, 'WebsiteDeployment', {
       sources: [
         Source.asset(frontendPath, {
+          exclude: ['node_modules', 'dist'],
           bundling: {
-            image: cdk.DockerImage.fromRegistry('node:22'),
-            command: [
-              'bash',
-              '-c',
-              'npm install --global npm@11.19.1 && npm ci && npm run build && rm -f dist/config.js && cp -r dist/* /asset-output/',
-            ],
+            // Fallback used only if the local build below is unavailable
+            image: DockerImage.fromRegistry('node:24'),
+            command: ['bash', '-c', 'npm ci && npm run build && cp -r dist/. /asset-output/'],
             local: {
               tryBundle(outputDir: string): boolean {
-                execSync('npm ci', {
-                  cwd: frontendPath,
-                  stdio: 'inherit',
-                });
-                execSync('npm run build', {
-                  cwd: frontendPath,
-                  stdio: 'inherit',
-                });
-                // Remove the local dev config.js from the build output
-                const distPath = path.join(frontendPath, 'dist');
-                execSync(`rm -f ${path.join(distPath, 'config.js')}`);
-                execSync(`cp -r ${distPath}/* ${outputDir}`, {
-                  stdio: 'inherit',
-                });
+                execSync('npm ci && npm run build', { cwd: frontendPath, stdio: 'inherit' });
+                execSync(`cp -r ${path.join(frontendPath, 'dist')}/. ${outputDir}`, { stdio: 'inherit' });
                 return true;
               },
             },
@@ -222,37 +181,11 @@ export class FrontendStack extends Stack {
       destinationBucket: websiteBucket,
       distribution: this.distribution,
       distributionPaths: ['/*'],
-      prune: false,
     });
 
-    // Deploy runtime config as a separate BucketDeployment.
-    // All values are now static strings (no CloudFormation tokens), so Source.data() works.
-    const configContent = `window.__RUNTIME_CONFIG__ = ${JSON.stringify(
-      {
-        apiUrl,
-        cognitoUserPoolId: props.userPoolId,
-        cognitoClientId: props.userPoolClientId,
-        cognitoRegion: props.envConfig.env.region,
-        adminMode: true,
-      },
-      null,
-      2,
-    )};\n`;
-
-    const configDeployment = new BucketDeployment(this, `${props.envConfig.project}ConfigDeployment`, {
-      sources: [Source.data('config.js', configContent)],
-      destinationBucket: websiteBucket,
-      distribution: this.distribution,
-      distributionPaths: ['/config.js'],
-      prune: false,
-    });
-
-    configDeployment.node.addDependency(websiteDeployment);
-
-    // Output the CloudFront distribution domain name
-    this.exportValue(this.distribution.distributionDomainName, {
-      name: `${props.envConfig.project}CloudFrontDistributionDomainName`,
-      description: `The domain name of the CloudFront distribution for the ${props.envConfig.project} Platform`,
+    new CfnOutput(this, 'SiteUrl', {
+      value: `https://${this.distribution.distributionDomainName}`,
+      description: 'Open this in a browser once the flight data has been loaded',
     });
   }
 }

@@ -1,55 +1,62 @@
 /**
- * A custom CDK construct for creating a DynamoDB table with optional pre-population of data from a local path.
+ * A DynamoDB table with sensible defaults (on-demand billing, AWS-managed
+ * encryption, point-in-time recovery) and support for vector indexes.
  *
- * This construct:
- * - Creates a DynamoDB table with sensible defaults (PAY_PER_REQUEST billing, AWS-managed encryption, PITR, and contributor insights).
- * - Optionally, if a `dataPath` is provided in the props, uploads local JSON files to a temporary S3 bucket and configures the table to import this data on creation.
- * - Ensures resources are cleaned up by setting appropriate removal policies.
- * - Adds dependencies to ensure correct resource creation order.
- *
- * @remarks
- * The table is only pre-populated when required, as determined by the presence of `dataPath`.
+ * The L2 `Table` construct does not expose vector indexes yet, so they are set
+ * on the underlying L1 `CfnTable`, which maps directly to the `VectorIndexes`
+ * property of `AWS::DynamoDB::Table`. When L2 support arrives this construct is
+ * the only place that needs to change.
  *
  * @example
  * ```typescript
- * new CustomTable(this, 'MyTable', {
+ * const { table } = new CustomTable(this, 'Table', {
+ *   tableName: 'Flights',
+ *   removalPolicy: RemovalPolicy.DESTROY,
  *   partitionKey: { name: 'PK', type: AttributeType.STRING },
- *   dataPath: './seed-data'
+ *   vectorIndexes: [
+ *     { indexName: 'position-4d', vectorAttribute: 'vec', dimensions: 4, distanceFunction: 'EUCLIDEAN' },
+ *   ],
  * });
  * ```
- *
- * @extends Construct
  */
 
 import { RemovalPolicy } from 'aws-cdk-lib';
-import { Bucket } from 'aws-cdk-lib/aws-s3';
-import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
 import {
-  Table,
-  TableProps,
   Attribute,
   BillingMode,
-  TableEncryption,
-  InputFormat,
-  InputCompressionType,
+  CfnTable,
   GlobalSecondaryIndexProps,
+  ITable,
+  Table,
+  TableEncryption,
+  TableProps,
 } from 'aws-cdk-lib/aws-dynamodb';
-
+import { Grant, IGrantable } from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
-interface CustomTableProps extends Pick<
-  TableProps,
-  'removalPolicy' | 'partitionKey' | 'tableName' | 'sortKey' | 'stream' | 'replicationRegions'
-> {
-  stageName: string; //The stage name which the dynamodb table is being used with
-  partitionKey: Attribute; // The partition key attribute for the table
-  removalPolicy: RemovalPolicy; //The removal policy for the table
-  contributorInsightsEnabled?: boolean; // Whether to enable contributor insights for the table
-  dataPath?: string; // The optional data path to the json files
-  globalSecondaryIndexes?: GlobalSecondaryIndexProps[]; // Optional global secondary indexes to add to the table
+export type VectorDistanceFunction = 'EUCLIDEAN' | 'COSINE' | 'DOT_PRODUCT';
+
+export interface VectorIndexProps {
+  indexName: string;
+  /** Name of the attribute holding the vector: a list of numbers, one per dimension */
+  vectorAttribute: string;
+  /** Number of dimensions. Every indexed item must have exactly this many. Maximum 4,096. */
+  dimensions: number;
+  /** Cannot be changed after the index is created */
+  distanceFunction: VectorDistanceFunction;
+  /**
+   * Other attributes to copy into the index. Only projected attributes can be
+   * returned by a search. Omit to project every attribute.
+   */
+  nonKeyAttributes?: string[];
 }
 
-type FixedCustomTableProps = Omit<TableProps, 'removalPolicy' | 'partitionKey' | 'tableName' | 'sortKey'>;
+interface CustomTableProps extends Pick<TableProps, 'tableName' | 'sortKey'> {
+  partitionKey: Attribute;
+  removalPolicy: RemovalPolicy;
+  globalSecondaryIndexes?: GlobalSecondaryIndexProps[];
+  vectorIndexes?: VectorIndexProps[];
+}
 
 export class CustomTable extends Construct {
   public readonly table: Table;
@@ -57,61 +64,48 @@ export class CustomTable extends Construct {
   constructor(scope: Construct, id: string, props: CustomTableProps) {
     super(scope, id);
 
-    let importSource;
-    let deployment;
+    const { globalSecondaryIndexes = [], vectorIndexes = [], ...tableProps } = props;
 
-    const fixedProps: FixedCustomTableProps = {
+    this.table = new Table(this, id, {
+      // Vector indexes are only supported on on-demand tables
       billingMode: BillingMode.PAY_PER_REQUEST,
       encryption: TableEncryption.AWS_MANAGED,
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: true,
         recoveryPeriodInDays: 7,
       },
-      ...(props.contributorInsightsEnabled === true && { contributorInsightsSpecification: { enabled: true } }),
-      timeToLiveAttribute: 'ttl',
-    };
-
-    // if we have provided a dataPath, we will pre-populate the table with data
-    if (props.dataPath) {
-      // Create a temporary S3 bucket to hold the data files
-      const dynamoDbSeedDataBucket = new Bucket(this, 'DynamoDbSeedDataBucket', {
-        autoDeleteObjects: true,
-        removalPolicy: RemovalPolicy.DESTROY,
-      });
-
-      // create the deployment of the local json files into s3 for the table import
-      deployment = new BucketDeployment(this, 'BucketDeployment', {
-        sources: [Source.asset(props.dataPath)],
-        exclude: ['*.DS_Store'],
-        destinationBucket: dynamoDbSeedDataBucket,
-      });
-
-      // we only pre-populate the table in non prod stages
-      importSource = {
-        bucket: dynamoDbSeedDataBucket,
-        inputFormat: InputFormat.dynamoDBJson(),
-        compressionType: InputCompressionType.GZIP,
-      };
-
-      deployment.node.addDependency(dynamoDbSeedDataBucket);
-    }
-
-    this.table = new Table(this, id, {
-      ...fixedProps,
-      ...(importSource && { importSource: importSource }),
-      ...props,
+      ...tableProps,
     });
 
-    // if we have a dataPath, we add a dependency on the bucket deployment
-    if (props.dataPath) {
-      this.table.node.addDependency(deployment as BucketDeployment);
+    for (const index of globalSecondaryIndexes) {
+      this.table.addGlobalSecondaryIndex(index);
     }
 
-    // Add any global secondary indexes if provided
-    if (props.globalSecondaryIndexes) {
-      for (const index of props.globalSecondaryIndexes) {
-        this.table.addGlobalSecondaryIndex(index);
-      }
+    if (vectorIndexes.length > 0) {
+      const cfnTable = this.table.node.defaultChild as CfnTable;
+      cfnTable.vectorIndexes = vectorIndexes.map((index): CfnTable.VectorIndexProperty => ({
+        indexName: index.indexName,
+        vectorAttribute: { attributeName: index.vectorAttribute },
+        dimensions: index.dimensions,
+        distanceFunction: index.distanceFunction,
+        projection: index.nonKeyAttributes
+          ? { projectionType: 'INCLUDE', nonKeyAttributes: index.nonKeyAttributes }
+          : { projectionType: 'ALL' },
+      }));
     }
   }
+}
+
+/**
+ * Allows `grantee` to run vector searches against one vector index.
+ *
+ * `table.grantReadData()` does not cover this: searching needs its own action,
+ * `dynamodb:SearchVectors`, on the index ARN.
+ */
+export function grantSearchVectors(table: ITable, grantee: IGrantable, indexName: string): Grant {
+  return Grant.addToPrincipal({
+    grantee,
+    actions: ['dynamodb:SearchVectors'],
+    resourceArns: [`${table.tableArn}/index/${indexName}`],
+  });
 }

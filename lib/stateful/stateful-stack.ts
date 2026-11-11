@@ -1,19 +1,21 @@
 /*
  * CDK Stack - Stateful Resources
  *
- * This CDK stack sets up the stateful backend resources for the Geospatial DynamoDB Vectors Demo Platform.
- * This contains the DynamoDB table(s)
+ * The DynamoDB table that holds every flight and position report, with:
+ *  - a GSI for listing flights by the hour in which they start
+ *  - a 4-dimensional vector index over the position reports
  *
  * Copyright Crockwell Solutions Limited
  */
 
-import { Stack, StackProps } from 'aws-cdk-lib';
+import { CfnOutput, Stack, StackProps } from 'aws-cdk-lib';
+import { AttributeType, ProjectionType, Table } from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
 import { EnvironmentConfig, Stage, getRemovalPolicyFromStage } from '../../config';
-import { AttributeType, StreamViewType, Table } from 'aws-cdk-lib/aws-dynamodb';
+import { VECTOR_DIMENSIONS } from '../../src/geo/vector-space';
+import { LIST_INDEX, TABLE_KEYS, VECTOR_INDEX } from '../../src/store/keys';
 import { CustomTable } from '../constructs/custom-table';
 import { addStackNagChecks } from '../utils/nag-checks';
-import { scopeReplicaProviderLogging } from '../utils/replica-provider-logging';
 
 export interface StatefulStackProps extends StackProps {
   stage: Stage;
@@ -21,50 +23,42 @@ export interface StatefulStackProps extends StackProps {
 }
 
 export class StatefulStack extends Stack {
-  // Exports from this stack
   public readonly table: Table;
 
   constructor(scope: Construct, id: string, props: StatefulStackProps) {
     super(scope, id, props);
 
-    // Define a DynamoDB table that will be used to store the main data
-    this.table = new CustomTable(this, `${props.envConfig.project}Table`, {
-      tableName: 'FlightsTable',
-      stageName: props.stage,
+    this.table = new CustomTable(this, 'FlightsTable', {
+      tableName: props.envConfig.tableName,
       removalPolicy: getRemovalPolicyFromStage(props.stage),
-      partitionKey: {
-        name: 'PK',
-        type: AttributeType.STRING,
-      },
-      sortKey: {
-        name: 'SK',
-        type: AttributeType.STRING,
-      },
-      stream: StreamViewType.NEW_AND_OLD_IMAGES,
-      replicationRegions: props.envConfig.regions.filter((region) => region !== this.region),
+      partitionKey: { name: TABLE_KEYS.partitionKey, type: AttributeType.STRING },
+      sortKey: { name: TABLE_KEYS.sortKey, type: AttributeType.STRING },
+      globalSecondaryIndexes: [
+        {
+          indexName: LIST_INDEX.name,
+          partitionKey: { name: LIST_INDEX.partitionKey, type: AttributeType.STRING },
+          sortKey: { name: LIST_INDEX.sortKey, type: AttributeType.STRING },
+          projectionType: ProjectionType.ALL,
+        },
+      ],
+      vectorIndexes: [
+        {
+          // Each position report stores [x, y, z, t] in the `vec` attribute. EUCLIDEAN because
+          // the question is "how far apart?", not "pointing the same way?" (COSINE) or
+          // "how aligned and how large?" (DOT_PRODUCT).
+          indexName: VECTOR_INDEX.name,
+          vectorAttribute: VECTOR_INDEX.attribute,
+          dimensions: VECTOR_DIMENSIONS,
+          distanceFunction: 'EUCLIDEAN',
+        },
+      ],
     }).table;
 
-    scopeReplicaProviderLogging(this, getRemovalPolicyFromStage(props.stage));
+    new CfnOutput(this, 'TableName', {
+      value: this.table.tableName,
+      description: 'DynamoDB table holding flights and position reports',
+    });
 
-    // cdk nag check and suppressions
-    addStackNagChecks(this, [
-      {
-        id: 'AwsSolutions-IAM5',
-        reason:
-          'CDK-managed DynamoDB replica provider requires wildcard permissions to manage global table replicas and indexes across configured regions',
-      },
-      {
-        id: 'AwsSolutions-L1',
-        reason: 'CDK-managed DynamoDB replica provider runtime is controlled by aws-cdk-lib',
-      },
-      {
-        id: 'AwsSolutions-SF1',
-        reason: 'CDK-managed DynamoDB replica provider waiter state machine is not application workflow infrastructure',
-      },
-      {
-        id: 'AwsSolutions-SF2',
-        reason: 'CDK-managed DynamoDB replica provider waiter state machine is not application workflow infrastructure',
-      },
-    ]);
+    addStackNagChecks(this, []);
   }
 }

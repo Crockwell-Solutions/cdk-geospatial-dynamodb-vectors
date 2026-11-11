@@ -1,2 +1,3 @@
 export { CustomLambda } from './custom-lambda';
-export { CustomTable } from './custom-table';
+export { CustomTable, grantSearchVectors } from './custom-table';
+export type { VectorIndexProps } from './custom-table';

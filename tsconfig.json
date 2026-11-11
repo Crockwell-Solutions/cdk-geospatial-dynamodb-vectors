@@ -1,45 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": [
-      "es2020",
-      "dom"
-    ],
-    "declaration": true,
+    "lib": ["es2022"],
     "strict": true,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "noImplicitThis": true,
-    "alwaysStrict": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
     "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": false,
-    "inlineSourceMap": true,
-    "inlineSources": true,
-    "experimentalDecorators": true,
-    "strictPropertyInitialization": false,
-    "typeRoots": [
-      "./node_modules/@types"
-    ],
-    "types": [
-      "node",
-      "jest"
-    ],
-    "paths": {
-      "@config/*": ["./config/*"],
-      "@config": ["./config/index.ts"],
-      "@constructs/*": ["./lib/constructs/*"],
-      "@constructs": ["./lib/constructs/index.ts"],
-      "@shared/*": ["./src/shared/*"],
-      "@shared": ["./src/shared/index.ts"]
-    }
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node", "jest"]
   },
-  "exclude": [
-    "node_modules",
-    "cdk.out",
-    "frontend"
-  ]
+  "include": ["bin", "config", "lib", "scripts", "src", "test"],
+  "exclude": ["node_modules", "cdk.out", "frontend"]
 }

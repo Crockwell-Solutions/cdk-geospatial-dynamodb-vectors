@@ -1,5 +1,5 @@
 /**
- * Jest configuration for the root (CDK infrastructure) project.
+ * Jest configuration for the root project (CDK infrastructure, Lambda code and scripts).
  *
  * The frontend is a separate project and is excluded from this test run.
  */
@@ -10,16 +10,8 @@ module.exports = {
   },
   testMatch: ['**/?(*.)+(spec|test).ts'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
-  roots: ['<rootDir>/bin', '<rootDir>/lib', '<rootDir>/src', '<rootDir>/config'],
-  testPathIgnorePatterns: ['/node_modules/', '/cdk.out/', '/frontend/', '/dist/'],
-  modulePathIgnorePatterns: ['/cdk.out/', '/frontend/', '/dist/'],
-  moduleNameMapper: {
-    '^@config$': '<rootDir>/config/index.ts',
-    '^@config/(.*)$': '<rootDir>/config/$1',
-    '^@constructs$': '<rootDir>/lib/constructs/index.ts',
-    '^@constructs/(.*)$': '<rootDir>/lib/constructs/$1',
-    '^@shared$': '<rootDir>/src/shared/index.ts',
-    '^@shared/(.*)$': '<rootDir>/src/shared/$1',
-  },
-  passWithNoTests: true,
+  roots: ['<rootDir>/lib', '<rootDir>/src', '<rootDir>/test'],
+  setupFiles: ['<rootDir>/test/setup.ts'],
+  testPathIgnorePatterns: ['/node_modules/', '/cdk.out/', '/frontend/'],
+  modulePathIgnorePatterns: ['/cdk.out/', '/frontend/'],
 };

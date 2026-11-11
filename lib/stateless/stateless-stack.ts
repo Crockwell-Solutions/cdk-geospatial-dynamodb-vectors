@@ -1,30 +1,27 @@
 /*
  * CDK Stack - Stateless Resources
  *
- * This CDK stack sets up the stateless backend resources for the Geospatial DynamoDB Vectors Demo Platform.
- * This contains the APIs, Lambda functions and event driven resources
+ * The flights API: API Gateway in front of one Lambda function per route.
+ *
+ *   GET /api/health                         table and vector index status
+ *   GET /api/manifest                       what has been loaded
+ *   GET /api/flights?bucket=HH              flights starting in a UTC hour
+ *   GET /api/flights/{flightId}             one flight with its position reports
+ *   GET /api/flights/{flightId}/nearby      flights that came close, via the vector index
  *
  * Copyright Crockwell Solutions Limited
  */
 
-import { Stack, StackProps, CfnOutput, Validations } from 'aws-cdk-lib/core';
-import {
-  RestApi,
-  Cors,
-  LambdaIntegration,
-  AuthorizationType,
-  MethodOptions,
-  CognitoUserPoolsAuthorizer,
-  EndpointType,
-  IResource,
-  Integration,
-  Method,
-} from 'aws-cdk-lib/aws-apigateway';
+import { CfnOutput, Duration, Size, Stack, StackProps } from 'aws-cdk-lib';
+import { Cors, EndpointType, IResource, LambdaIntegration, RestApi } from 'aws-cdk-lib/aws-apigateway';
 import { Table } from 'aws-cdk-lib/aws-dynamodb';
-import { UserPool } from 'aws-cdk-lib/aws-cognito';
-import { CustomLambda } from '../constructs/custom-lambda';
+import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
-import { EnvironmentConfig, Stage } from '@config';
+import { EnvironmentConfig, Stage } from '../../config';
+import { VECTOR_INDEX } from '../../src/store/keys';
+import { CustomLambda } from '../constructs/custom-lambda';
+import { grantSearchVectors } from '../constructs/custom-table';
 import { addStackNagChecks } from '../utils/nag-checks';
 
 export interface StatelessStackProps extends StackProps {
@@ -34,114 +31,92 @@ export interface StatelessStackProps extends StackProps {
 }
 
 export class StatelessStack extends Stack {
-  public readonly apiUrl: string;
   public readonly api: RestApi;
-  private readonly cognitoUserPoolArn: string;
-  private cognitoAuthorizer?: CognitoUserPoolsAuthorizer;
 
   constructor(scope: Construct, id: string, props: StatelessStackProps) {
     super(scope, id, props);
-    this.cognitoUserPoolArn = props.envConfig.cognitoUserPoolArn;
 
-    // API Gateway
-    const api = (this.api = new RestApi(this, `${props.envConfig.project}Api`, {
-      restApiName: `${props.envConfig.project} API`,
-      description: `API for ${props.envConfig.project}`,
+    const { envConfig, table } = props;
+
+    this.api = new RestApi(this, 'FlightsApi', {
+      restApiName: `${envConfig.project} API`,
+      description: 'Flight tracks and 4D proximity search backed by a DynamoDB vector index',
+      endpointConfiguration: { types: [EndpointType.REGIONAL] },
+      // Flight lists compress to roughly half their size
+      minCompressionSize: Size.kibibytes(1),
       deployOptions: {
         stageName: 'prod',
-      },
-      endpointConfiguration: {
-        types: [EndpointType.REGIONAL],
+        // There is no authentication, so cap how hard the API can be driven
+        throttlingRateLimit: envConfig.apiThrottle.rateLimit,
+        throttlingBurstLimit: envConfig.apiThrottle.burstLimit,
       },
       defaultCorsPreflightOptions: {
         allowOrigins: Cors.ALL_ORIGINS,
-        allowMethods: Cors.ALL_METHODS,
+        allowMethods: ['GET', 'OPTIONS'],
       },
-    }));
-
-    // Lambda: GET /health
-    const healthcheck = new CustomLambda(this, 'HealthcheckFunction', {
-      functionName: 'HealthcheckFunction',
-      source: 'src/api/healthcheck.ts',
-      envConfig: props.envConfig,
-      environmentVariables: {
-        TABLE_NAME: props.table.tableName,
-      },
-    }).lambda;
-    props.table.grantReadData(healthcheck);
-
-    // API Gateway resources
-    const healthResource = api.root.addResource('health');
-
-    const healthMethod = healthResource.addMethod('GET', new LambdaIntegration(healthcheck), {
-      authorizationType: AuthorizationType.NONE,
     });
-    Validations.of(healthMethod).acknowledge(
-      { id: 'AwsSolutions-APIG4', reason: 'GET /health is an intentionally public health endpoint.' },
-      { id: 'AwsSolutions-COG4', reason: 'GET /health is an intentionally public health endpoint.' },
-    );
 
-    this.apiUrl = api.url;
+    const lambda = (name: string, source: string, memorySize?: number): NodejsFunction => {
+      const fn = new CustomLambda(this, name, {
+        source,
+        envConfig,
+        memorySize,
+        environmentVariables: { TABLE_NAME: table.tableName },
+      }).lambda;
+      table.grantReadData(fn);
+      return fn;
+    };
+
+    const get = (resource: IResource, fn: NodejsFunction): void => {
+      resource.addMethod('GET', new LambdaIntegration(fn, { timeout: Duration.seconds(29) }));
+    };
+
+    // Everything lives under /api so that CloudFront can route it with a single behaviour
+    const apiRoot = this.api.root.addResource('api');
+
+    const healthcheck = lambda('Healthcheck', 'src/api/healthcheck.ts', 256);
+    healthcheck.addToRolePolicy(
+      new PolicyStatement({ actions: ['dynamodb:DescribeTable'], resources: [table.tableArn] }),
+    );
+    get(apiRoot.addResource('health'), healthcheck);
+
+    get(apiRoot.addResource('manifest'), lambda('GetManifest', 'src/api/get-manifest.ts', 256));
+
+    const flights = apiRoot.addResource('flights');
+    get(flights, lambda('ListFlights', 'src/api/list-flights.ts'));
+
+    const flight = flights.addResource('{flightId}');
+    get(flight, lambda('GetFlight', 'src/api/get-flight.ts'));
+
+    // The only function that touches the vector index. Reading the table is not enough:
+    // vector search has its own IAM action, scoped to the index.
+    const findNearbyFlights = lambda('FindNearbyFlights', 'src/api/find-nearby-flights.ts', 1769);
+    grantSearchVectors(table, findNearbyFlights, VECTOR_INDEX.name);
+    get(flight.addResource('nearby'), findNearbyFlights);
 
     new CfnOutput(this, 'ApiUrl', {
-      value: api.url,
-      description: `${props.envConfig.project} API URL`,
+      value: this.api.url,
+      description: 'Base URL of the flights API (also available under /api on the CloudFront distribution)',
     });
 
-    // cdk nag check and suppressions
     addStackNagChecks(this, [
       {
-        id: 'AwsSolutions-L1',
-        reason: 'Lambda functions use the latest runtime are being used',
+        id: 'AwsSolutions-APIG4',
+        reason: 'Public, read-only demo API. No authentication by design; the stage is throttled instead.',
       },
       {
-        id: 'AwsSolutions-APIG1',
-        reason: 'Access logging is disabled for API Gateway',
+        id: 'AwsSolutions-COG4',
+        reason: 'Public, read-only demo API. No authentication by design; the stage is throttled instead.',
       },
-      {
-        id: 'AwsSolutions-APIG2',
-        reason: 'Logging is disabled for API Gateway',
-      },
-      {
-        id: 'AwsSolutions-APIG3',
-        reason: 'No WAF required',
-      },
-      {
-        id: 'AwsSolutions-APIG6',
-        reason: 'Logging is disabled for API Gateway',
-      },
-      {
-        id: 'AwsSolutions-IAM4',
-        reason: 'Accepted use of AWS managed policies',
-      },
+      { id: 'AwsSolutions-APIG1', reason: 'Access logging is not needed for a demo API.' },
+      { id: 'AwsSolutions-APIG2', reason: 'Requests are validated in the Lambda handlers.' },
+      { id: 'AwsSolutions-APIG3', reason: 'No WAF required for a throttled demo API.' },
+      { id: 'AwsSolutions-APIG6', reason: 'Execution logging is not needed for a demo API.' },
+      { id: 'AwsSolutions-IAM4', reason: 'AWSLambdaBasicExecutionRole is added by the CDK Lambda construct.' },
       {
         id: 'AwsSolutions-IAM5',
-        reason: 'Accepted use of AWS managed policies',
+        reason: 'Wildcards come from CDK grants: table index ARNs (grantReadData) and X-Ray tracing.',
       },
     ]);
-  }
-
-  /** Create the shared Cognito authorizer only when a protected route is added. */
-  public addCognitoAuthorizedMethod(
-    resource: IResource,
-    httpMethod: string,
-    integration: Integration,
-    options: Omit<MethodOptions, 'authorizer' | 'authorizationType'> = {},
-  ): Method {
-    if (resource.api !== this.api) {
-      throw new Error('Cognito-authorized methods must belong to this REST API.');
-    }
-    if (!this.cognitoAuthorizer) {
-      const userPool = UserPool.fromUserPoolArn(this, 'ImportedUserPool', this.cognitoUserPoolArn);
-      this.cognitoAuthorizer = new CognitoUserPoolsAuthorizer(this, 'FlightsServiceCognitoAuthorizer', {
-        cognitoUserPools: [userPool],
-        authorizerName: 'FlightsServiceCognitoAuthorizer',
-      });
-    }
-    return resource.addMethod(httpMethod, integration, {
-      ...options,
-      authorizer: this.cognitoAuthorizer,
-      authorizationType: AuthorizationType.COGNITO,
-    });
   }
 }

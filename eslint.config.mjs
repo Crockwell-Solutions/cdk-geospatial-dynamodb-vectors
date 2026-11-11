@@ -1,87 +1,57 @@
 /**
- * ESLint configuration for the project.
+ * ESLint configuration for the root project (CDK infrastructure, Lambda code and scripts).
  *
- * This configuration is defined using `defineConfig` and includes settings for
- * TypeScript, JSON, Markdown, and Prettier integration.
+ * - TypeScript: typescript-eslint recommended rules, plus Prettier formatting as lint errors.
+ * - JSON and Markdown: their recommended rule sets.
  *
- * - TypeScript:
- *   - Uses `@typescript-eslint` plugin with recommended rules.
- *   - Enforces specific rules such as no unused variables, no console logs, 
- *     consistent use of semicolons, single quotes, and Prettier formatting.
- *
- * - JSON:
- *   - Applies the `json` plugin with recommended rules for JSON files.
- *
- * - Markdown:
- *   - Applies the `markdown` plugin with recommended rules for Markdown files.
- *
- * - Prettier:
- *   - Integrates Prettier for consistent code formatting.
- *   - Additional settings are configured in .prettierrc.json
- *
+ * Formatting options live in .prettierrc.json. The frontend has its own configuration.
  */
 
-import tseslint from "typescript-eslint";
-import json from "@eslint/json";
-import markdown from "@eslint/markdown";
-import { defineConfig } from "eslint/config";
-import tsparser from "@typescript-eslint/parser";
-import prettierPlugin from "eslint-plugin-prettier";
-import prettierConfig from "eslint-config-prettier";
-import typescriptEslint from '@typescript-eslint/eslint-plugin';
+import json from '@eslint/json';
+import markdown from '@eslint/markdown';
+import tsparser from '@typescript-eslint/parser';
+import prettierConfig from 'eslint-config-prettier';
+import prettierPlugin from 'eslint-plugin-prettier';
+import { defineConfig } from 'eslint/config';
+import tseslint from 'typescript-eslint';
 
 export default defineConfig([
   {
-    ignores: [
-      'package-lock.json',
-      '**/cdk.out',
-      '**/cdk.out.frontend',
-      '**/node_modules/**/*',
-      'frontend',
-      'dist',
-      // tsc build artefacts (d.ts + js) that live alongside their .ts
-      // sources in bin/, lib/, config/, src/. Only .ts should be linted.
-      'bin/**/*.js',
-      'bin/**/*.d.ts',
-      'config/**/*.js',
-      'config/**/*.d.ts',
-      'lib/**/*.js',
-      'lib/**/*.d.ts',
-      'src/**/*.js',
-      'src/**/*.d.ts',
-    ],
+    ignores: ['package-lock.json', '**/cdk.out', '**/node_modules/**/*', 'frontend', 'data'],
   },
-  tseslint.configs.recommended,
   {
-    files: ["**/*.json"],
-    plugins: { json },
-    language: "json/json",
-    extends: ["json/recommended"]
-  },
-  { 
-    files: ["**/*.md"],
-    plugins: { markdown },
-    language: "markdown/commonmark",
-    extends: ["markdown/recommended"],
-    rules: { "markdown/no-missing-label-refs": "off" } },
-  {
-    files: ["**/*.ts"],
+    files: ['**/*.ts'],
+    extends: [tseslint.configs.recommended],
     languageOptions: {
       parser: tsparser,
-      sourceType: "module",
+      sourceType: 'module',
     },
     plugins: {
-      "@typescript-eslint": typescriptEslint,
       prettier: prettierPlugin,
     },
     rules: {
-      ...tseslint.configs.recommended.rules,
       ...prettierConfig.rules,
       '@typescript-eslint/no-unused-vars': 'error',
-      "no-console": "warn",
-      "semi": ["error", "always"],
-      "quotes": ["error", "single"],
-      "prettier/prettier": "error",
+      'no-console': 'warn',
+      'prettier/prettier': 'error',
     },
-  }
+  },
+  {
+    // Command-line scripts report progress on the console
+    files: ['scripts/**/*.ts'],
+    rules: { 'no-console': 'off' },
+  },
+  {
+    files: ['**/*.json'],
+    plugins: { json },
+    language: 'json/json',
+    extends: ['json/recommended'],
+  },
+  {
+    files: ['**/*.md'],
+    plugins: { markdown },
+    language: 'markdown/gfm',
+    extends: ['markdown/recommended'],
+    rules: { 'markdown/no-missing-label-refs': 'off' },
+  },
 ]);

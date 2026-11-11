@@ -1,13 +1,13 @@
-// Return headers for API responses
-export const RETURN_HEADERS = {
-  statusCode: 200,
-  isBase64Encoded: false,
-  headers: {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers':
-      'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent',
-    'Access-Control-Allow-Credentials': 'true',
-    'Access-Control-Allow-Methods': 'OPTIONS,GET,PUT,POST,DELETE',
-  },
+/** Headers returned with every API response */
+export const JSON_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET,OPTIONS',
+};
+
+/** Flight data only changes when the dataset is reloaded, so browsers and CloudFront may cache it briefly */
+export const CACHE_SECONDS = {
+  manifest: 30,
+  flights: 300,
+  none: 0,
 };

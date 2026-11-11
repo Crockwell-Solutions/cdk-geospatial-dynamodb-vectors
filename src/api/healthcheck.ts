@@ -1,62 +1,43 @@
 /**
- * Lambda handler — GET /health
+ * GET /api/health
  *
- * Healthcheck endpoint that verifies DynamoDB connectivity by querying
- * the main table with a limit of 50 items. Returns the DB latency
- * in the response. This endpoint does not require authentication.
+ * Reports whether the table and its vector index are ready. A vector index can
+ * still be CREATING (or backfilling) after the table itself is ACTIVE, and there
+ * is no SDK waiter for it, so this is the quickest way to check after a deploy.
  */
 
-import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
-import type { APIGatewayProxyResult } from 'aws-lambda';
-import { RETURN_HEADERS } from '../shared';
+import { DescribeTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { apiHandler, json } from '../shared';
+import { flightStore } from '../store';
+import { VECTOR_INDEX } from '../store/keys';
 
-const REGION = process.env.REGION!;
-const TABLE_NAME = process.env.TABLE_NAME!;
+const client = new DynamoDBClient({});
 
-const client = new DynamoDBClient({ region: REGION });
+export const handler = apiHandler(async () => {
+  const [{ Table }, manifest] = await Promise.all([
+    client.send(new DescribeTableCommand({ TableName: process.env.TABLE_NAME! })),
+    flightStore().getManifest(),
+  ]);
 
-export const handler = async (): Promise<APIGatewayProxyResult> => {
-  const start = Date.now();
-  let dbStatus: 'healthy' | 'unhealthy' = 'healthy';
-  let itemCount = 0;
-  let errorMessage: string | undefined;
+  const index = Table?.VectorIndexes?.find(({ IndexName }) => IndexName === VECTOR_INDEX.name);
+  const ready = Table?.TableStatus === 'ACTIVE' && index?.IndexStatus === 'ACTIVE' && !index.Backfilling && !!manifest;
 
-  try {
-    const command = new QueryCommand({
-      TableName: TABLE_NAME,
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-      ExpressionAttributeValues: {
-        ':pk': { S: 'TEST' },
-        ':skPrefix': { S: 'TEST' },
-      },
-      Limit: 50,
-    });
-
-    const result = await client.send(command);
-    itemCount = result.Count ?? 0;
-  } catch (error) {
-    dbStatus = 'unhealthy';
-    errorMessage = error instanceof Error ? error.message : 'Unknown error';
-  }
-
-  const dbLatencyMs = Date.now() - start;
-
-  const statusCode = dbStatus === 'healthy' ? 200 : 503;
-
-  return {
-    ...RETURN_HEADERS,
-    statusCode,
-    body: JSON.stringify({
-      status: dbStatus,
-      timestamp: new Date().toISOString(),
-      region: REGION,
-      database: {
-        status: dbStatus,
-        tableName: TABLE_NAME,
-        latencyMs: dbLatencyMs,
-        itemCount,
-        ...(errorMessage && { error: errorMessage }),
-      },
-    }),
-  };
-};
+  return json(ready ? 200 : 503, {
+    status: ready ? 'ready' : 'not-ready',
+    table: { name: Table?.TableName, status: Table?.TableStatus },
+    vectorIndex: index
+      ? {
+          name: index.IndexName,
+          status: index.IndexStatus,
+          backfilling: index.Backfilling ?? false,
+          dimensions: index.Dimensions,
+          distanceFunction: index.DistanceFunction,
+          // Updated by DynamoDB roughly every six hours, so expect 0 straight after a load
+          approximateItemCount: index.ItemCount,
+        }
+      : undefined,
+    dataset: manifest
+      ? { date: manifest.date, flights: manifest.flights, positions: manifest.positions, loadedAt: manifest.loadedAt }
+      : undefined,
+  });
+});

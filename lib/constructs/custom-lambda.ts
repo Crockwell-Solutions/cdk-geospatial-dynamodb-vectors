@@ -1,75 +1,38 @@
 /**
- * A CDK construct that creates a custom AWS Lambda function using Node.js.
+ * A Node.js Lambda function with the project's defaults: ARM64, JSON logging to
+ * a dedicated log group, X-Ray tracing and Powertools configuration.
  *
- * This construct wraps the `NodejsFunction` from `@aws-cdk/aws-lambda-nodejs` and applies
- * default configuration, while allowing overrides via `CustomLambdaProps`.
- *
- * Features:
- * - Merges default Lambda properties with user-provided properties.
- * - Sets up environment variables including PowerTools and custom variables.
- * - Supports VPC configuration, custom memory size, timeout, and logging.
- * - Bundles Lambda code with source maps and optional minification.
- * - Uses ARM_64 architecture and the latest Node.js runtime.
+ * The AWS SDK is bundled with the function rather than taken from the Lambda
+ * runtime. Vector search (`SearchVectorsCommand`) only exists in recent SDK
+ * releases, and bundling pins the version to the one this project was tested with.
  *
  * @example
  * ```typescript
- * new CustomLambda(this, 'MyFunction', {
- *   functionName: 'my-lambda',
- *   source: 'src/my-function.ts',
- *   handler: 'handler',
- *   envConfig: { env: { region: 'us-east-1' }, logLevel: 'INFO', minifyCodeOnDeployment: false },
- *   environmentVariables: { FOO: 'bar' },
+ * const { lambda } = new CustomLambda(this, 'GetFlight', {
+ *   source: 'src/api/get-flight.ts',
+ *   envConfig,
+ *   environmentVariables: { TABLE_NAME: table.tableName },
  * });
  * ```
- *
- * @extends Construct
- *
- * @property {NodejsFunction} lambda - The underlying NodejsFunction instance.
- *
- * @param scope - The parent construct.
- * @param id - The unique identifier for this construct.
- * @param props - Custom properties for configuring the Lambda function.
  */
 
 import * as path from 'path';
-import { Construct } from 'constructs';
 import { Duration, RemovalPolicy } from 'aws-cdk-lib';
-import { NodejsFunction, NodejsFunctionProps } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { Architecture, LoggingFormat, Runtime, SystemLogLevel, Tracing } from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
-import { Runtime, Tracing, Architecture, LoggingFormat, SystemLogLevel } from 'aws-cdk-lib/aws-lambda';
-import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
-import { EnvironmentConfig } from '@config';
+import { Construct } from 'constructs';
+import { EnvironmentConfig } from '../../config';
+import { projectRoot } from '../utils/project-root';
 
-const lambdaPowerToolsConfig = {
-  POWERTOOLS_LOGGER_LOG_EVENT: 'true',
-  POWERTOOLS_LOGGER_SAMPLE_RATE: '0.05',
-  POWERTOOLS_TRACE_ENABLED: 'enabled',
-  POWERTOOLS_TRACER_CAPTURE_HTTPS_REQUESTS: 'captureHTTPsRequests',
-  POWERTOOLS_TRACER_CAPTURE_RESPONSE: 'captureResult',
-  POWERTOOLS_METRICS_NAMESPACE: 'RunwayWatcher',
-};
-
-const lambdaDefaultEnvironmentVariables = {
-  AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
-  NODE_OPTIONS: '--enable-source-maps',
-};
-
-interface CustomLambdaProps extends NodejsFunctionProps {
-  readonly envConfig: EnvironmentConfig; // The environment configuration
-  readonly source: string; // The source file for the lambda function
-  readonly environmentVariables?: object; // Additional environment variables to add to the function
-  readonly policyStatements?: [PolicyStatement]; // The policy statements to add to the function
-  readonly externalModules?: [string] | []; // Array of external modules to include explicitly
-  readonly copyDirectory?: string; // Optional folder reference to copy source files and bundle with the Lambda
+interface CustomLambdaProps {
+  readonly envConfig: EnvironmentConfig;
+  /** Path to the handler source file, relative to the project root */
+  readonly source: string;
+  readonly environmentVariables?: Record<string, string>;
+  readonly memorySize?: number;
+  readonly timeout?: Duration;
 }
-
-// Default properties for the Lambda function
-const defaultLambdaProps = {
-  memorySize: 1024,
-  timeout: Duration.seconds(60),
-  handler: 'handler',
-  environmentVariables: {},
-};
 
 export class CustomLambda extends Construct {
   public readonly logGroup: LogGroup;
@@ -78,62 +41,39 @@ export class CustomLambda extends Construct {
   constructor(scope: Construct, id: string, props: CustomLambdaProps) {
     super(scope, id);
 
-    // Merge the default lambda props with the provided ones
-    props = { ...defaultLambdaProps, ...props };
+    const { envConfig } = props;
+    const functionName = `${envConfig.project}-${id}`;
 
-    this.logGroup = new LogGroup(this, `${id}-LogGroup`, {
-      logGroupName: `/aws/lambda/${props.functionName ? props.functionName : id}`,
-      retention: RetentionDays.THREE_MONTHS,
+    this.logGroup = new LogGroup(this, 'LogGroup', {
+      logGroupName: `/aws/lambda/${functionName}`,
+      retention: RetentionDays.ONE_MONTH,
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    this.lambda = new NodejsFunction(this, id, {
-      functionName: props.functionName ? props.functionName : id, // If no function name is provided, use the lambda construct id
-      memorySize: props.memorySize,
-      timeout: props.timeout,
-      entry: path.join(process.cwd(), props.source),
+    this.lambda = new NodejsFunction(this, 'Function', {
+      functionName,
+      entry: path.join(projectRoot, props.source),
+      handler: 'handler',
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: props.memorySize ?? 1024,
+      timeout: props.timeout ?? Duration.seconds(29),
       environment: {
-        REGION: props.envConfig.env.region,
-        ...lambdaDefaultEnvironmentVariables,
-        ...lambdaPowerToolsConfig,
-        POWERTOOLS_SERVICE_NAME: props.functionName ? props.functionName : id,
-        POWERTOOLS_LOG_LEVEL: props.envConfig.logLevel,
+        NODE_OPTIONS: '--enable-source-maps',
+        POWERTOOLS_SERVICE_NAME: functionName,
+        POWERTOOLS_LOG_LEVEL: envConfig.logLevel,
         ...props.environmentVariables,
       },
-      runtime: Runtime.NODEJS_LATEST,
-      architecture: Architecture.ARM_64,
-      handler: props.handler,
       logGroup: this.logGroup,
       loggingFormat: LoggingFormat.JSON,
-      systemLogLevelV2: props.envConfig.logLevel === 'DEBUG' ? SystemLogLevel.DEBUG : SystemLogLevel.WARN,
+      systemLogLevelV2: SystemLogLevel.WARN,
       tracing: Tracing.ACTIVE,
       bundling: {
+        bundleAwsSDK: true,
         sourceMap: true,
-        minify: props.envConfig.minifyCodeOnDeployment,
-        esbuildArgs: {
-          '--log-level': 'warning',
-        },
-        ...(props.externalModules && { externalModules: props.externalModules }),
-        ...(props.copyDirectory && {
-          commandHooks: {
-            beforeBundling() {
-              return [];
-            },
-            beforeInstall() {
-              return [];
-            },
-            afterBundling(inputDir: string, outputDir: string) {
-              return [`cp -r ${inputDir}/${props.copyDirectory} ${outputDir}/files`];
-            },
-          },
-        }),
+        minify: envConfig.minifyCodeOnDeployment,
+        esbuildArgs: { '--log-level': 'warning' },
       },
-      ...(props.durableConfig && { durableConfig: props.durableConfig }),
-      ...(props.vpc && {
-        vpc: props.vpc,
-        vpcSubnets: props.vpcSubnets,
-        securityGroups: props.securityGroups,
-      }),
     });
   }
 }
