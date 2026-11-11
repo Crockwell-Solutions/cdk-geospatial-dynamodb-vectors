@@ -2,14 +2,12 @@
   "name": "cdk-geospatial-dynamodb-vectors",
   "version": "1.0.0",
   "description": "Demo project: 4D (x, y, z, time) geospatial proximity search using a DynamoDB vector index",
-  "license": "MIT",
   "private": true,
   "bin": {
     "cdk-geospatial-dynamodb-vectors": "bin/app.ts"
   },
   "engines": {
-    "node": "^22.22.2 || >=24.15.0",
-    "npm": ">=11.17.0"
+    "node": "^22.13.0 || >=24.0.0"
   },
   "scripts": {
     "build": "tsc --noEmit",

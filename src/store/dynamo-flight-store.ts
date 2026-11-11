@@ -75,7 +75,7 @@ export function createDocumentClient(region?: string): DynamoDBDocumentClient {
 }
 
 export class DynamoFlightStore implements FlightStore {
-  private manifest?: { value: DatasetManifest | undefined; readAt: number };
+  private manifest?: { value: DatasetManifest; readAt: number };
 
   constructor(
     private readonly tableName: string,
@@ -88,7 +88,8 @@ export class DynamoFlightStore implements FlightStore {
     }
     const { Item } = await this.client.send(new GetCommand({ TableName: this.tableName, Key: MANIFEST_KEY }));
     const value = Item?.manifest as DatasetManifest | undefined;
-    this.manifest = { value, readAt: Date.now() };
+    // Only remember a manifest that exists, so the API notices as soon as the data has been loaded
+    this.manifest = value ? { value, readAt: Date.now() } : undefined;
     return value;
   }
 

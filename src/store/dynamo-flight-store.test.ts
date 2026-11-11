@@ -156,8 +156,14 @@ describe('DynamoDB flight store', () => {
     });
   });
 
-  test('reports a missing manifest as undefined', async () => {
-    dynamo.on(GetCommand).resolves({});
-    expect(await store().getManifest()).toBeUndefined();
+  test('reports a missing manifest as undefined, and looks again next time', async () => {
+    dynamo
+      .on(GetCommand)
+      .resolvesOnce({})
+      .resolves({ Item: { manifest: { date: '2026-10-01' } } });
+    const subject = store();
+
+    expect(await subject.getManifest()).toBeUndefined();
+    expect(await subject.getManifest()).toEqual({ date: '2026-10-01' });
   });
 });

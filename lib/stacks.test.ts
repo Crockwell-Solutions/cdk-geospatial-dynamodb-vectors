@@ -179,6 +179,18 @@ describe('frontend stack', () => {
     });
   });
 
+  test('does not forward the viewer Host header to API Gateway', () => {
+    // API Gateway rejects requests whose Host header is the CloudFront domain
+    const policies = Object.values(templates.frontend.findResources('AWS::CloudFront::CachePolicy')).map(
+      (policy) => policy.Properties.CachePolicyConfig,
+    );
+    const apiPolicy = policies.find(
+      (config) => config.ParametersInCacheKeyAndForwardedToOrigin.QueryStringsConfig.QueryStringBehavior === 'all',
+    );
+    expect(apiPolicy.ParametersInCacheKeyAndForwardedToOrigin.HeadersConfig).toEqual({ HeaderBehavior: 'none' });
+    expect(apiPolicy).toMatchObject({ MinTTL: 0, DefaultTTL: 0 });
+  });
+
   test('has no Cognito resources or configuration', () => {
     for (const template of Object.values(templates)) {
       expect(JSON.stringify(template.toJSON())).not.toMatch(/cognito/i);

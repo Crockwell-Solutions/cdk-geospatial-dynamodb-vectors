@@ -66,7 +66,7 @@ function toTrackPolylines(positions: readonly Position[]): string[] {
 /**
  * Builds flights from raw records.
  *
- * A flight is identified by `CALLSIGN#DATE`. Around 8% of callsigns appear more
+ * A flight is identified by `CALLSIGN#DATE`. Around 9% of callsigns appear more
  * than once in a day (an aircraft flying several legs under one callsign, or a
  * shared training callsign), so later flights get a `#2`, `#3`... suffix in
  * order of departure. Aircraft with no callsign are identified by their ICAO

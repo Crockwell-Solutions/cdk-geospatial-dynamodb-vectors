@@ -8,9 +8,9 @@
  * roughly 70 km while one degree of latitude is roughly 111 km.
  *
  * Lambert-93 is the official conformal conic projection for metropolitan
- * France. Across the area covered by the sample data its scale error stays
- * below 0.3%, which means Euclidean distance on the grid is, for our purposes,
- * real distance over the ground.
+ * France. Across the area covered by the sample data, distances on the grid
+ * are within half a percent of great-circle distances, which means Euclidean
+ * distance on the grid is, for our purposes, real distance over the ground.
  *
  * Coordinates are returned in kilometres relative to the projection origin
  * (3°E, 46.5°N, roughly the centre of France) rather than with the standard

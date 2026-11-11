@@ -124,6 +124,22 @@ export class FrontendStack extends Stack {
       enableAcceptEncodingGzip: true,
     });
 
+    // For the API: cache on the path and query string only, for as long as each response's own
+    // Cache-Control header allows (flight lists for a few minutes, analysis results not at all).
+    // A custom policy rather than a managed one, because the managed "use origin cache control"
+    // policies forward the viewer's Host header, which API Gateway rejects.
+    const apiCachePolicy = new CachePolicy(this, 'ApiCachePolicy', {
+      comment: 'Honour Cache-Control from the API, keyed on path and query string',
+      minTtl: Duration.seconds(0),
+      defaultTtl: Duration.seconds(0),
+      maxTtl: Duration.days(1),
+      cookieBehavior: CacheCookieBehavior.none(),
+      headerBehavior: CacheHeaderBehavior.none(),
+      queryStringBehavior: CacheQueryStringBehavior.all(),
+      enableAcceptEncodingBrotli: true,
+      enableAcceptEncodingGzip: true,
+    });
+
     const websiteOrigin = S3BucketOrigin.withOriginAccessControl(websiteBucket);
 
     this.distribution = new Distribution(this, 'WebsiteDistribution', {
@@ -147,14 +163,12 @@ export class FrontendStack extends Stack {
           cachePolicy: staticAssetCachePolicy,
           responseHeadersPolicy: securityHeaders,
         },
-        // API Gateway. Each Lambda decides how long its response may be cached via Cache-Control:
-        // flight lists are cached at the edge for a few minutes, analysis results are never cached.
         'api/*': {
           origin: new RestApiOrigin(props.api),
           viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           allowedMethods: AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
           cachedMethods: CachedMethods.CACHE_GET_HEAD,
-          cachePolicy: CachePolicy.USE_ORIGIN_CACHE_CONTROL_HEADERS_QUERY_STRINGS,
+          cachePolicy: apiCachePolicy,
           originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           compress: true,
         },
