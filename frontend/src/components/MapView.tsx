@@ -5,7 +5,6 @@ import {
   Marker,
   NavigationControl,
   type ExpressionSpecification,
-  type FilterSpecification,
   type GeoJSONSource,
   type LayerSpecification,
   type StyleSpecification,
@@ -16,7 +15,7 @@ import {
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import type { Feature, FeatureCollection } from 'geojson'
 import { useEffect, useRef, useState } from 'react'
-import { altitude, clock, nauticalMiles, feet } from '../lib/format'
+import { clock, nauticalMiles, feet } from '../lib/format'
 import type { Encounter, FlightDetail, MapFlight } from '../types'
 
 export interface Insets {
@@ -44,7 +43,6 @@ const COLOURS = {
   ink: '#f0efec',
   label: '#c3c2b7',
   traffic: '#3987e5',
-  trafficHover: '#9ec5f4',
   own: '#d95926',
   other: '#199e70',
 }
@@ -98,8 +96,6 @@ const HOME_BOUNDS: [[number, number], [number, number]] = [
   [8.9, 50.6],
 ]
 
-const NO_FLIGHT: FilterSpecification = ['==', ['get', 'id'], '']
-
 const byZoom = (low: number, high: number): ExpressionSpecification => [
   'interpolate',
   ['linear'],
@@ -123,14 +119,6 @@ const DATA_LAYERS: LayerSpecification[] = [
     source: 'flights',
     layout: { 'line-join': 'round', 'line-cap': 'round' },
     paint: { 'line-color': COLOURS.traffic, 'line-width': byZoom(0.5, 1.5), 'line-opacity': TRAFFIC_OPACITY.normal },
-  },
-  {
-    id: 'flights-hover',
-    type: 'line',
-    source: 'flights',
-    filter: NO_FLIGHT,
-    layout: { 'line-join': 'round', 'line-cap': 'round' },
-    paint: { 'line-color': COLOURS.trafficHover, 'line-width': 2.5 },
   },
 
   // Flights that came close to the selected one
@@ -283,12 +271,6 @@ function paddingFor(map: MapLibreMap, insets: Insets, margin: number) {
   return { left: insets.left + space, right: insets.right + space, top: space, bottom: insets.bottom + space }
 }
 
-interface Hover {
-  x: number
-  y: number
-  flight: MapFlight
-}
-
 export function MapView({
   flights,
   selected,
@@ -302,7 +284,6 @@ export function MapView({
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const [loaded, setLoaded] = useState(false)
-  const [hover, setHover] = useState<Hover | null>(null)
 
   // Latest values for use inside map event handlers, which are registered once
   const latest = useRef({ flights, onSelect, onFocusEncounter, onReady, insets })
@@ -314,7 +295,6 @@ export function MapView({
   // Create the map once
   useEffect(() => {
     let cancelled = false
-    let frame = 0
     let map: MapLibreMap | undefined
 
     void loadBasemapStyle().then((style) => {
@@ -352,42 +332,25 @@ export function MapView({
         setLoaded(true)
       })
 
-      // Hover and click on any flight track. A small box around the pointer makes thin lines easy to hit.
-      const flightAt = (point: { x: number; y: number }): MapFlight | undefined => {
-        if (!created.getLayer('flights')) return undefined
-        const box: [[number, number], [number, number]] = [
-          [point.x - 5, point.y - 5],
-          [point.x + 5, point.y + 5],
-        ]
-        const [feature] = created.queryRenderedFeatures(box, { layers: ['flights'] })
-        return feature ? flightsById.current.get(feature.properties.id as string) : undefined
-      }
-
-      created.on('mousemove', (event) => {
-        cancelAnimationFrame(frame)
-        frame = requestAnimationFrame(() => {
-          const flight = flightAt(event.point)
-          created.getCanvas().style.cursor = flight ? 'pointer' : ''
-          if (created.getLayer('flights-hover')) {
-            created.setFilter('flights-hover', flight ? ['==', ['get', 'id'], flight.flightId] : NO_FLIGHT)
-          }
-          setHover(flight ? { x: event.point.x, y: event.point.y, flight } : null)
-        })
-      })
-      created.on('mouseout', () => {
-        cancelAnimationFrame(frame)
-        if (created.getLayer('flights-hover')) created.setFilter('flights-hover', NO_FLIGHT)
-        setHover(null)
-      })
+      // Click a flight track to select it. A small box around the pointer makes thin lines easy to hit.
+      // There is deliberately no hover feedback: hit-testing every track on each pointer move is too
+      // much work with the whole dataset on screen, so the map is only queried when it is clicked.
       created.on('click', (event) => {
-        const flight = flightAt(event.point)
-        if (flight) latest.current.onSelect(flight.flightId)
+        if (!created.getLayer('flights')) return
+        const { x, y } = event.point
+        const [feature] = created.queryRenderedFeatures(
+          [
+            [x - 5, y - 5],
+            [x + 5, y + 5],
+          ],
+          { layers: ['flights'] },
+        )
+        if (feature) latest.current.onSelect(feature.properties.id as string)
       })
     })
 
     return () => {
       cancelled = true
-      cancelAnimationFrame(frame)
       map?.remove()
       mapRef.current = null
     }
@@ -481,22 +444,6 @@ export function MapView({
   return (
     <div className="absolute inset-0">
       <div ref={container} className="h-full w-full" />
-      {hover && (
-        <div
-          className="pointer-events-none absolute z-10 rounded-md border border-hairline bg-panel/95 px-2.5 py-1.5 text-xs shadow-lg"
-          style={{ left: hover.x + 14, top: hover.y + 14 }}
-        >
-          <div className="font-semibold text-ink">{hover.flight.callsign}</div>
-          <div className="text-ink-2">
-            {[hover.flight.aircraftType, `${clock(hover.flight.startTime)}–${clock(hover.flight.endTime)} UTC`]
-              .filter(Boolean)
-              .join(' · ')}
-          </div>
-          <div className="text-muted">
-            {altitude(hover.flight.minAlt)} to {altitude(hover.flight.maxAlt)}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
